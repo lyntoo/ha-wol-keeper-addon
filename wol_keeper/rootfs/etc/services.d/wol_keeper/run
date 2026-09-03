@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -u
+
+OPTIONS=/data/options.json
+INTERFACE=$(jq -r '.interface // ""' "$OPTIONS")
+INTERVAL=$(jq -r '.check_interval // 300' "$OPTIONS")
+
+log() {
+    echo "[wol-keeper] $1"
+}
+
+# Detection automatique si aucune interface n'est precisee dans les options :
+# on ignore les interfaces virtuelles/internes connues (loopback, veth*, docker*,
+# hassio, ponts br-*, tunnels wg*/tun*) et on prend la premiere carte physique
+# restante qui a un lien actif.
+autodetect_interface() {
+    local candidate
+    for candidate in $(ip -o link show | awk -F': ' '{print $2}' | grep -Ev '^(lo|veth|docker|hassio|br-|wg|tun|virbr)'); do
+        if ip link show "$candidate" | grep -q "state UP"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    # Aucun lien UP trouve : on retente sans exiger l'etat UP (utile au tout
+    # premier demarrage, avant que la negociation du lien soit terminee).
+    for candidate in $(ip -o link show | awk -F': ' '{print $2}' | grep -Ev '^(lo|veth|docker|hassio|br-|wg|tun|virbr)'); do
+        echo "$candidate"
+        return 0
+    done
+    return 1
+}
+
+if [ -z "$INTERFACE" ]; then
+    log "Aucune interface precisee dans les options — detection automatique..."
+    INTERFACE=$(autodetect_interface)
+    if [ -z "$INTERFACE" ]; then
+        log "ERREUR : aucune carte reseau physique trouvee. Regle l'option 'interface' manuellement (ex: eth0, enp2s0) dans la configuration de l'add-on."
+        exit 1
+    fi
+    log "Interface detectee automatiquement : $INTERFACE"
+else
+    log "Interface configuree manuellement : $INTERFACE"
+fi
+
+if ! ip link show "$INTERFACE" >/dev/null 2>&1; then
+    log "ERREUR : l'interface '$INTERFACE' n'existe pas sur ce systeme."
+    exit 1
+fi
+
+SUPPORTED=$(ethtool "$INTERFACE" 2>/dev/null | grep -i "Supports Wake-on:" | awk '{print $3}')
+if [ -z "$SUPPORTED" ]; then
+    log "AVERTISSEMENT : impossible de lire les capacites Wake-on de '$INTERFACE' (carte non supportee par ethtool ?)."
+elif [[ "$SUPPORTED" != *g* ]]; then
+    log "AVERTISSEMENT : la carte '$INTERFACE' n'annonce pas supporter le mode magic packet (g). Capacites annoncees : '$SUPPORTED'."
+fi
+
+log "Verification toutes les ${INTERVAL}s que le Wake-on-LAN (magic packet) reste actif sur '$INTERFACE'."
+
+while true; do
+    CURRENT=$(ethtool "$INTERFACE" 2>/dev/null | grep -i "^	Wake-on:" | awk '{print $2}')
+    if [ "$CURRENT" != "g" ]; then
+        log "Wake-on actuel sur '$INTERFACE' : '${CURRENT:-inconnu}' — reactivation du magic packet (wol g)..."
+        if ethtool -s "$INTERFACE" wol g 2>/dev/null; then
+            log "Wake-on-LAN reactive avec succes sur '$INTERFACE'."
+        else
+            log "ERREUR : echec de l'activation du Wake-on-LAN sur '$INTERFACE'."
+        fi
+    fi
+    sleep "$INTERVAL"
+done

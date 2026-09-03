@@ -1,0 +1,21 @@
+name: "WoL Keeper"
+version: "1.0.0"
+slug: "wol_keeper"
+description: "Garde le Wake-on-LAN (magic packet) actif sur une carte reseau, meme apres un arret propre — corrige les pilotes/cartes reseau qui reinitialisent ce reglage a chaque demarrage (ex: Realtek r8169)."
+url: "https://github.com/lyntoo/wol-keeper-addon"
+arch:
+  - amd64
+  - aarch64
+  - armv7
+startup: system
+boot: auto
+init: false
+host_network: true
+privileged:
+  - NET_ADMIN
+options:
+  interface: ""
+  check_interval: 300
+schema:
+  interface: str
+  check_interval: int(30,3600)
